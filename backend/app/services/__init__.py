@@ -14,6 +14,7 @@ from app.services.ddl_handle import DdlHandleService
 from app.services.checkpoint import CheckpointService
 from app.services.schema_evo import SchemaEvoService
 from app.services.dedup_stream import DedupStreamService
+from app.services.key_check import KeyCheckService
 from app.services.iceberg_commit import IcebergCommitService
 from app.services.compaction import CompactionService
 from app.services.expire_snap import ExpireSnapService
@@ -38,6 +39,7 @@ SERVICES: dict[str, BaseModuleService] = {
     "checkpoint": CheckpointService(),
     "schema_evo": SchemaEvoService(),
     "dedup_stream": DedupStreamService(),
+    "key_check": KeyCheckService(),
     "iceberg_commit": IcebergCommitService(),
     "compaction": CompactionService(),
     "expire_snap": ExpireSnapService(),

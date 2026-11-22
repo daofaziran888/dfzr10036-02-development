@@ -84,4 +84,38 @@ class EventTransService(BaseModuleService):
             dedup_rows.append(dedup_config)
             results["dedup"] = dedup_config
 
+        # 转换管道启动后开启同键事件校验窗口；同一数据流存在登记窗口时不再重复开窗。
+        check_rows = store.rows("_key_check_windows")
+        has_check = [r for r in check_rows if str(r.get("数据流", "")) == tag]
+        if has_check:
+            results["key_check"] = has_check[0]
+        else:
+            new_check_id = max((int(r.get("id", 0)) for r in check_rows), default=0) + 1
+            rule_row = next(
+                (r for r in store.rows("binlog_parse") if str(r.get("源端", "")) == tag),
+                None,
+            )
+            check_window = {
+                "id": new_check_id,
+                "窗口编号": f"KCHK-{new_check_id:04d}",
+                "管道编号": str(entry.get("管道编号", "")),
+                "数据流": tag,
+                "去重键": "order_id",
+                "窗口起点": "2026-11-18 09:00:00",
+                "窗口终点": "2026-11-18 09:10:00",
+                "解析规则版本": str((rule_row or {}).get("规则版本", "v1")),
+                "阈值版本": "TH-2026-11-18-01",
+                "同键阈值": {
+                    "同位点重送生效次数": 1,
+                    "同键位点跨度上限": 1000,
+                    "同键更新放行上限": 3,
+                    "负载差异处理": "暂缓复核",
+                },
+                "状态": "待校验",
+                "校验批次号": "",
+                "最近校验": "",
+            }
+            check_rows.append(check_window)
+            results["key_check"] = check_window
+
         return results

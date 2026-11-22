@@ -35,7 +35,54 @@
       </label>
       <button class="btn" data-testid="query" type="submit">查询</button>
       <button class="btn ghost" data-testid="reset" type="button" @click="resetFilters">重置条件</button>
+      <button
+        v-if="meta.key === 'key_check'"
+        class="btn"
+        data-testid="run-window"
+        type="button"
+        :disabled="runningWindow"
+        @click="runWindow"
+      >
+        {{ runningWindow ? '校验中…' : '校验选中窗口' }}
+      </button>
     </form>
+
+    <section v-if="meta.key === 'key_check'" class="check-panel" data-testid="check-panel">
+      <h3>窗口与审计</h3>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>窗口编号</th><th>数据流</th><th>窗口区间</th><th>阈值版本</th>
+            <th>解析规则版本</th><th>状态</th><th>最近批次</th><th>最近校验</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="window in windows"
+            :key="String(window.窗口编号)"
+            :class="{ selected: String(window.窗口编号) === selectedWindow }"
+            @click="selectWindow(String(window.窗口编号))"
+          >
+            <td>{{ window.窗口编号 }}</td>
+            <td>{{ window.数据流 }}</td>
+            <td>{{ window.窗口起点 }} ~ {{ window.窗口终点 }}</td>
+            <td>{{ window.阈值版本 }}</td>
+            <td>{{ window.解析规则版本 }}</td>
+            <td>{{ window.状态 }}</td>
+            <td>{{ window.校验批次号 || '—' }}</td>
+            <td>{{ window.最近校验 || '—' }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <table v-if="latestAudit" class="data-table audit-table" data-testid="latest-audit">
+        <tbody>
+          <tr><th>校验批次</th><td>{{ latestAudit.批次号 }}</td><th>判定绑定</th><td>{{ latestAudit.阈值版本 }} / 解析规则 {{ latestAudit.解析规则版本 }}</td></tr>
+          <tr><th>放行 / 暂缓 / 重复</th><td>{{ latestAudit.放行数 }} / {{ latestAudit.暂缓数 }} / {{ latestAudit.重复丢弃数 }}</td><th>当前解析规则</th><td>{{ latestAudit.当前解析规则版本 }}</td></tr>
+          <tr><th>首次关联可用更新</th><td colspan="3">{{ (latestAudit.首次关联可用更新 || []).map((item: any) => `${item.事件编号}@${item.位点}[${item.修改字段.join('、')}]`).join('；') || '无' }}</td></tr>
+          <tr><th>暂缓确认后需重算</th><td colspan="3">{{ (latestAudit.暂缓确认后需重算输出 || []).map((item: any) => `${item.输出对象}(${item.受影响范围})`).join('；') || '无' }}</td></tr>
+        </tbody>
+      </table>
+    </section>
 
     <table class="data-table">
       <thead>
@@ -88,6 +135,7 @@
 
     <footer class="page-foot">
       <span>共 {{ total }} 条{{ meta.name }}记录</span>
+      <span v-if="checkMessage" class="check-message">{{ checkMessage }}</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -99,9 +147,12 @@ import { computed, onMounted, ref } from 'vue'
 import {
   createEntry,
   downloadEntries,
+  listCheckAudits,
+  listCheckWindows,
   listEntries,
   moduleMeta,
   runAction as applyAction,
+  runCheckWindow,
 } from '@/api/backend-service'
 import type { EntryRow } from '@/data/types'
 
@@ -115,6 +166,11 @@ const filterFields = meta.fields.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const windows = ref<Record<string, any>[]>([])
+const selectedWindow = ref('')
+const latestAudit = ref<Record<string, any> | null>(null)
+const runningWindow = ref(false)
+const checkMessage = ref('')
 const stats = computed(() => [
   { label: meta.metrics[0], value: total.value },
   { label: meta.metrics[1], value: rows.value.filter((row) => row.status === meta.statuses[1]).length },
@@ -182,8 +238,53 @@ async function reload() {
     const payload = await listEntries(meta.key, filters.value)
     rows.value = payload.items
     total.value = payload.total
+    if (meta.key === 'key_check') await reloadWindows()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '业务列表读取失败'
+  }
+}
+
+async function reloadWindows() {
+  try {
+    const payload = await listCheckWindows()
+    windows.value = payload.items as Record<string, any>[]
+    if (!selectedWindow.value && windows.value.length) {
+      selectedWindow.value = String(windows.value[0].窗口编号)
+    }
+    if (selectedWindow.value) await reloadAudit()
+  } catch {
+    windows.value = []
+  }
+}
+
+async function reloadAudit() {
+  try {
+    const payload = await listCheckAudits(selectedWindow.value)
+    latestAudit.value = payload.items.length ? (payload.items[payload.items.length - 1] as Record<string, any>) : null
+  } catch {
+    latestAudit.value = null
+  }
+}
+
+function selectWindow(windowId: string) {
+  selectedWindow.value = windowId
+  checkMessage.value = ''
+  void reloadAudit()
+}
+
+async function runWindow() {
+  if (!selectedWindow.value) return
+  runningWindow.value = true
+  errorMessage.value = ''
+  try {
+    const result = await runCheckWindow(selectedWindow.value)
+    checkMessage.value = result.message
+    if (!result.ok) throw new Error(result.message)
+    await reload()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '窗口校验失败'
+  } finally {
+    runningWindow.value = false
   }
 }
 

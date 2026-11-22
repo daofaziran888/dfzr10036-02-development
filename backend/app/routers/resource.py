@@ -8,7 +8,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
+from app.schemas import (
+    ActionPayload,
+    ActionResult,
+    CheckEventPayload,
+    CheckRunPayload,
+    EntryPayload,
+    PageResult,
+)
 from app.services import service_for
 
 router = APIRouter(prefix="/api", tags=["业务资源"])
@@ -19,6 +26,112 @@ def require_service(module: str):
     if service is None:
         raise HTTPException(status_code=404, detail=f"未知业务模块：{module}")
     return service
+
+
+# ---- 同键事件校验清单 ----
+# 这些固定路径必须注册在 /{module}/{entry_id} 之前，避免被动态段吞掉。
+
+@router.get("/key_check/windows")
+def list_key_check_windows(status: str | None = Query(default=None)) -> dict[str, Any]:
+    from app.services.key_check import KeyCheckService
+    windows = KeyCheckService().list_windows(status=status)
+    return {"items": windows, "total": len(windows)}
+
+
+@router.get("/key_check/windows/{window_id}")
+def get_key_check_window(window_id: str) -> dict[str, Any]:
+    from app.services.key_check import KeyCheckService
+    service = KeyCheckService()
+    window = service.get_window(window_id)
+    if window is None:
+        raise HTTPException(status_code=404, detail=f"校验窗口 {window_id} 不存在")
+    events = [
+        event for event in __import__("app.store", fromlist=["store"]).store.rows("_key_check_events")
+        if str(event.get("窗口编号", "")) == str(window["窗口编号"])
+    ]
+    return {"window": window, "events": events}
+
+
+@router.post("/key_check/windows/{window_id}/events")
+def add_key_check_events(window_id: str, payload: CheckEventPayload) -> dict[str, Any]:
+    from app.services.key_check import KeyCheckService
+    window, message = KeyCheckService().add_events(window_id, payload.events)
+    return {"ok": window is not None, "message": message, "window": window}
+
+
+@router.post("/key_check/windows/{window_id}/run")
+def run_key_check(window_id: str, payload: CheckRunPayload | None = None) -> dict[str, Any]:
+    from app.services.key_check import KeyCheckService
+    service = KeyCheckService()
+    threshold = (payload.threshold if payload else {}) or {}
+    version = payload.threshold_version if payload else None
+    if threshold or version:
+        window, message = service.update_threshold(window_id, threshold, version or "")
+        if window is None:
+            return {"ok": False, "message": message}
+    window, message = service.run_window_check(window_id)
+    return {"ok": window is not None, "message": message, "window": window}
+
+
+@router.get("/key_check/audits")
+def list_key_check_audits(window_id: str | None = Query(default=None)) -> dict[str, Any]:
+    from app.store import store
+    audits = list(store.rows("_key_check_audits"))
+    if window_id:
+        audits = [row for row in audits if str(row.get("窗口编号", "")) == window_id]
+    return {"items": audits, "total": len(audits)}
+
+
+@router.get("/key_check/audits/{batch_id}")
+def get_key_check_audit(batch_id: str) -> dict[str, Any]:
+    from app.store import store
+    audit = next(
+        (row for row in store.rows("_key_check_audits") if str(row.get("批次号", "")) == batch_id),
+        None,
+    )
+    if audit is None:
+        raise HTTPException(status_code=404, detail=f"校验批次 {batch_id} 不存在")
+    return audit
+
+
+# ---- 维表关联消费校验清单 ----
+
+@router.get("/dim_join/{entry_id}/key-check")
+def dim_join_key_check(entry_id: int) -> dict[str, Any]:
+    from app.services import service_for
+    service = service_for("dim_join")
+    summary = service.key_check_summary(entry_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"关联配置 {entry_id} 不存在或已归档")
+    return summary
+
+
+@router.post("/dim_join/{entry_id}/build-rows")
+def dim_join_build_rows(entry_id: int) -> dict[str, Any]:
+    from app.services import service_for
+    service = service_for("dim_join")
+    result = service.build_join_rows(entry_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"关联配置 {entry_id} 不存在或已归档")
+    return {"ok": True, "message": "已按校验清单分配关联资格", "result": result}
+
+
+@router.get("/dim_join/{entry_id}/join-rows")
+def dim_join_rows(entry_id: int) -> dict[str, Any]:
+    from app.services import service_for
+    service = service_for("dim_join")
+    result = service.list_join_rows(entry_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"关联配置 {entry_id} 不存在或已归档")
+    return result
+
+
+@router.post("/dim_join/recompute/{task_id}/complete")
+def dim_join_complete_recompute(task_id: int) -> dict[str, Any]:
+    from app.services import service_for
+    service = service_for("dim_join")
+    task, message = service.complete_recompute(task_id)
+    return {"ok": task is not None, "message": message, "task": task}
 
 
 @router.get("/{module}", response_model=PageResult[dict])

@@ -29,3 +29,13 @@ class EntryPayload(BaseModel):
 class ActionPayload(BaseModel):
     action: str
     remark: str | None = None
+
+
+class CheckRunPayload(BaseModel):
+    """窗口校验入参：阈值可留空，留空时沿用窗口登记的阈值快照。"""
+    threshold: dict[str, Any] = Field(default_factory=dict)
+    threshold_version: str | None = None
+
+
+class CheckEventPayload(BaseModel):
+    events: list[dict[str, Any]] = Field(default_factory=list)
